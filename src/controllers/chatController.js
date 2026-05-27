@@ -5,20 +5,17 @@ import { DocumentParser } from '../utils/documentParser.js';
 
 export class ChatController {
     static async processGemmaChat(message, botMentionPrefix) {
-        const userPrompt = message.content.replace(botMentionPrefix, '').trim();
+        // 1. 取得去標記後的原始文字
+        let userPrompt = message.content.replace(botMentionPrefix, '').trim();
         const sessionId = message.channel.id;
         const timestamp = new Date().toISOString();
 
         await message.channel.sendTyping();
 
         try {
-            await MessageModel.saveMessage(sessionId, 'user', userPrompt);
-            const historyContext = await MessageModel.getRecentContext(sessionId, 6);
-
-            let chatMessages = [];
             let targetImageBase64 = null;
 
-            // 1. 視覺判定：檢查當前對話訊息是否有直接夾帶圖檔
+            // 2. 視覺判定：檢查當前對話訊息是否有直接夾帶圖檔
             const hasDirectImage = message.attachments && message.attachments.size > 0;
             if (hasDirectImage) {
                 const attachment = message.attachments.first();
@@ -29,7 +26,19 @@ export class ChatController {
                 }
             }
 
-            // 2. 根據是否包含圖片進行分流封裝
+            // 🎯 【關鍵防護防線】：如果使用者完全沒打字
+            if (!userPrompt) {
+                // 如果有夾帶圖片，預設改為請求圖片解讀；若是純標記則給予預設親切提問
+                userPrompt = targetImageBase64 ? '請幫我描述這張圖片的內容。' : '你好！請問有什麼我可以幫您的嗎？';
+            }
+
+            // 3. 安全將確保有文字的 userPrompt 存入歷史資料庫，解決 Mongoose ValidationError
+            await MessageModel.saveMessage(sessionId, 'user', userPrompt);
+            const historyContext = await MessageModel.getRecentContext(sessionId, 6);
+
+            let chatMessages = [];
+
+            // 4. 根據是否包含圖片進行分流封裝
             if (targetImageBase64) {
                 // 雲端多模態標準的 Content Array 格式
                 chatMessages = [
@@ -37,7 +46,7 @@ export class ChatController {
                     {
                         role: 'user',
                         content: [
-                            { type: 'text', text: userPrompt || '請幫我描述這張圖片的內容。' },
+                            { type: 'text', text: userPrompt },
                             { 
                                 type: 'image_url', 
                                 image_url: { url: `data:image/jpeg;base64,${targetImageBase64}` } 
@@ -81,7 +90,7 @@ export class ChatController {
                 }
             }
 
-            // 3. 提交至雲端推理節點
+            // 5. 提交至雲端推理節點
             const response = await fetch(process.env.OLLAMA_API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -95,7 +104,6 @@ export class ChatController {
             if (!response.ok) throw new Error(`核心節點異常: ${response.status}`);
             const data = await response.json();
 
-            // 相容雲端標準的 choices 節點與原本的 message 節點讀取回傳文字
             const aiResponse = data.choices ? data.choices[0].message.content : data.message.content;
 
             await MessageModel.saveMessage(sessionId, 'assistant', aiResponse);
