@@ -6,40 +6,41 @@ export class ChatController {
     static async processGemmaChat(message) {
         const userPrompt = message.content.replace('!ask ', '').trim();
         const sessionId = message.channel.id;
+        const timestamp = new Date().toISOString();
 
-        // 1. 調用 View 展現即時回應狀態（打字中）
+        console.log(`[${timestamp}] [INFO] [Controller] 開始處理 AI 請求. SessionID: ${sessionId}`);
         await message.channel.sendTyping();
 
         try {
-            // 2. 透過 Model 持久化用戶輸入
             await MessageModel.saveMessage(sessionId, 'user', userPrompt);
 
-            // 3. 透過 Model 提取歷史上下文
+            // 紀錄歷史訊息讀取狀態
             const context = await MessageModel.getRecentContext(sessionId, 10);
+            console.log(`[${timestamp}] [DEBUG] [Controller] 成功載入歷史上下文，共 ${context.length} 條紀錄`);
 
-            // 4. 呼叫 Ollama 運算
+            // 效能監控：記錄 Ollama 請求發起時間
+            const startTime = Date.now();
+            
             const response = await fetch(process.env.OLLAMA_API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: process.env.MODEL_NAME,
-                    messages: context,
-                    stream: false
-                })
+                body: JSON.stringify({ model: process.env.MODEL_NAME, messages: context, stream: false })
             });
 
-            if (!response.ok) throw new Error('Ollama 回傳異常');
+            if (!response.ok) throw new Error(`Ollama 伺服器回應異常, 狀態碼: ${response.status}`);
             const data = await response.json();
             const aiResponse = data.message.content;
 
-            // 5. 透過 Model 持久化 AI 回覆
-            await MessageModel.saveMessage(sessionId, 'assistant', aiResponse);
+            // 效能監控：計算 LLM 推論總耗時
+            const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+            console.log(`[${timestamp}] [INFO] [Controller] Ollama 推論完成. 耗時: ${duration} 秒. 回覆字數: ${aiResponse.length} 字`);
 
-            // 6. 將資料交付給 View，進行 UI 渲染與輸出
+            await MessageModel.saveMessage(sessionId, 'assistant', aiResponse);
             await DiscordView.renderReply(message, aiResponse);
 
         } catch (error) {
-            console.error('[Controller 錯誤]', error);
+            // 嚴謹的錯誤日誌必須包含完整堆疊軌跡 (error.stack)
+            console.error(`[${timestamp}] [ERROR] [Controller] 處理 Chat 流程崩潰. 錯誤原因:`, error.stack);
             await DiscordView.renderError(message, '系統核心處理失敗，請稍後再試。');
         }
     }
