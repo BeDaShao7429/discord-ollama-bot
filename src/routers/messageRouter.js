@@ -1,14 +1,13 @@
 import { ChatController } from '../controllers/chatController.js';
 import { DocumentController } from '../controllers/documentController.js';
-import { AdminController } from '../controllers/adminController.js'; // 1. 引入新控制器
+import { AdminController } from '../controllers/adminController.js';
 
 export async function handleMessage(message) {
-    // 安全防守：排除機器人自身的訊息，防止無限迴圈
     if (message.author.bot) return;
 
     const content = message.content.trim();
 
-	// 只要是 $ 開頭，路由不處理細節，直接拋給 AdminController 完成職責分離
+    // 管理維護指令分支
     if (content.startsWith('$')) {
         return await AdminController.handleCommand(message, content);
     }
