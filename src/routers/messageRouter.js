@@ -8,20 +8,9 @@ export async function handleMessage(message) {
 
     const content = message.content.trim();
 
-    // 🎯 【最高優先權：管理維護指令分支】
+	// 只要是 $ 開頭，路由不處理細節，直接拋給 AdminController 完成職責分離
     if (content.startsWith('$')) {
-        // 選填：如果想要限制只有特定人員能用，可以解開下方註解（替換為您的 Discord ID）
-        // if (message.author.id !== '您的_DISCORD_ID') return;
-
-        if (content === '$clear') {
-            return await AdminController.clearDatabase(message);
-        }
-        if (content === '$listdoc') {
-            return await AdminController.listDocuments(message);
-        }
-        if (content === '$listmsg') {
-            return await AdminController.listMessages(message);
-        }
+        return await AdminController.handleCommand(message, content);
     }
 
     const botMentionPrefix = `<@${message.client.user.id}>`;
