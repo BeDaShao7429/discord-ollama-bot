@@ -17,6 +17,13 @@ export class DocumentParser {
             const buffer = Buffer.from(arrayBuffer);
             const fileName = attachment.name.toLowerCase();
 
+			// 新增：圖檔格式判定
+            if (fileName.endsWith('.png') || fileName.endsWith('.jpg') || fileName.endsWith('.jpeg') || fileName.endsWith('.webp')) {
+                const base64String = buffer.toString('base64');
+                return { type: 'image_base64', content: base64String };
+            }
+
+			// 文檔判定
             if (fileName.endsWith('.pdf')) {
                 // pdf-parse-new 的呼叫方式與原版完全相同
                 const data = await pdf(buffer);
@@ -30,7 +37,7 @@ export class DocumentParser {
                 if (encoding === 'windows-1252') encoding = 'utf-8';
                 
                 const decoder = new TextDecoder(encoding);
-                return decoder.decode(buffer);
+                return { type: 'text', content: decoder.decode(buffer) };
             }
         } catch (error) {
             console.error(`[UTIL_ERROR] 文件解析失敗 (File: ${attachment.name}):`, error.message);

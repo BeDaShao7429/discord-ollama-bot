@@ -11,8 +11,14 @@ export class DocumentController {
         try {
             console.log(`[${timestamp}] [INFO] [DocumentController] 開始解析文檔 "${attachment.name}"...`);
             
-            // 🎯 【調整核心】：直接將 attachment 丟給重構後的解析器，一氣呵成完成下載與文字提取
+            // 直接將 attachment 丟給重構後的解析器，一氣呵成完成下載與文字提取
             const fullText = await DocumentParser.parse(attachment);
+			
+			// 如果是圖片，不建立向量庫，直接暫存提示使用者可開始對話:: 跳出
+            if (parsedResult.type === 'image_base64') {
+                console.log(`[${timestamp}] [INFO] [DocumentController] 圖檔 "${attachment.name}" 已成功轉換為 Base64 緩衝`);
+                return await DiscordView.renderReply(message, `[訊息] 偵測到圖檔 \`${attachment.name}\`。請標記我並輸入問題（例如：@機器人 這張圖裡有什麼？），我將為您進行判讀。`);
+            }
 
             if (!fullText || !fullText.trim()) {
                 throw new Error('無法從上傳的檔案中提取出任何有效文本內容');
