@@ -1,30 +1,40 @@
-import pdf from 'pdf-parse-new'; // 現代化原生 ESM 導入，不再報錯
+import jschardet from 'jschardet';
 import mammoth from 'mammoth';
+import pdf from 'pdf-parse-new'; // 修正：直接使用標準 ESM 引入，不再需要 createRequire
 
 export class DocumentParser {
     /**
-     * 依據副檔名動態解析二進位 Buffer 並提取純文字
-     * @param {Buffer} buffer - 檔案的實體二進位資料
-     * @param {string} extension - 帶有點號的副檔名 (例如: .pdf)
-     * @returns {Promise<string>} 提取出的純文字內容
+     * 解析 Discord 附件內容
+     * @param {object} attachment - Discord 訊息的附件物件
+     * @returns {Promise<string>} 解析後的純文字內容
      */
-    static async parse(buffer, extension) {
-        const normalizedExt = extension.toLowerCase();
+    static async parse(attachment) {
+        try {
+            const response = await fetch(attachment.url);
+            if (!response.ok) throw new Error(`HTTP 錯誤狀態碼: ${response.status}`);
+            
+            const arrayBuffer = await response.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            const fileName = attachment.name.toLowerCase();
 
-        switch (normalizedExt) {
-            case '.pdf':
-                const parsedPdf = await pdf(buffer);
-                return parsedPdf.text.trim();
-
-            case '.docx':
-                const parsedDocx = await mammoth.extractRawText({ buffer });
-                return parsedDocx.value.trim();
-
-            case '.txt':
-                return buffer.toString('utf-8').trim();
-
-            default:
-                throw new Error(`不支援的檔案副檔名格式: ${extension}`);
+            if (fileName.endsWith('.pdf')) {
+                // pdf-parse-new 的呼叫方式與原版完全相同
+                const data = await pdf(buffer);
+                return data.text;
+            } else if (fileName.endsWith('.docx')) {
+                const data = await mammoth.extractRawText({ buffer });
+                return data.value;
+            } else {
+                const detected = jschardet.detect(buffer);
+                let encoding = detected.encoding ? detected.encoding.toLowerCase() : 'utf-8';
+                if (encoding === 'windows-1252') encoding = 'utf-8';
+                
+                const decoder = new TextDecoder(encoding);
+                return decoder.decode(buffer);
+            }
+        } catch (error) {
+            console.error(`[UTIL_ERROR] 文件解析失敗 (File: ${attachment.name}):`, error.message);
+            throw error;
         }
     }
 }

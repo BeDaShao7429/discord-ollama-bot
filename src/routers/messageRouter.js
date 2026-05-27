@@ -12,18 +12,26 @@ export async function handleMessage(message) {
     const hasFiles = message.attachments && message.attachments.size > 0;
 
     if (isMentioned || hasFiles) {
+        const timestamp = new Date().toISOString();
         
-        // 🎯 【最高優先權】：只要發現有檔案夾帶，無論有沒有打文字，一律強行分流至導入端
+        // 🎯 流程一：上傳與寫入知識庫（非阻塞式）
         if (hasFiles) {
             const attachment = message.attachments.first();
-            const timestamp = new Date().toISOString();
+            console.log(`[${timestamp}] [ROUTE] 偵測到使用者夾帶檔案 "${attachment.name}"，優先啟動 DocumentController 進行知識庫導入`);
             
-            console.log(`[${timestamp}] [ROUTE] 偵測到使用者上傳檔案 "${attachment.name}"，強行引導至 DocumentController`);
-            return await DocumentController.processUpload(message, attachment);
+            try {
+                // 執行文件解析與儲存。此處必須使用 await 確保寫入完成，後續的 RAG 才能撈得到資料
+                await DocumentController.processUpload(message, attachment);
+            } catch (uploadError) {
+                console.error(`[${timestamp}] [ERROR] 檔案自動導入失敗:`, uploadError.message);
+                // 即使檔案導入失敗，也不中斷後續的常規對話嘗試
+            }
         }
 
-        // 3. 如果完全沒有夾帶檔案，且確定被標記，才判定為對話問答
+        // 🎯 流程二：常規對話與 RAG 問答判定
+        // 修正：只要有被標記（無論是一起上傳檔案，還是純文字對話），一律進入對話控制器處理
         if (isMentioned) {
+            console.log(`[${timestamp}] [ROUTE] 訊息符合對話條件，引導至 ChatController 進行推理`);
             return await ChatController.processGemmaChat(message, botMentionPrefix);
         }
     }
