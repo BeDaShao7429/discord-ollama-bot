@@ -30,25 +30,19 @@ export class ChatController {
                 userPrompt = targetImageBase64 ? '請幫我描述這張圖片的內容。' : '你好！請問有什麼我可以幫您的嗎？';
             }
 
-            // 安全將文字存入歷史資料庫
+            // 安全將文字存入歷史資料庫 (維持純字串)
             await MessageModel.saveMessage(sessionId, 'user', userPrompt);
+            
+            // 🎯 核心更動 1：從資料庫撈出來的歷史紀錄，完全保留為原本的純字串物件，不進行 map 陣列轉換
             const historyContext = await MessageModel.getRecentContext(sessionId, 6);
-
-            // 🎯 【優化核心】：將 MongoDB 撈出來的歷史紀錄，通通標準化轉換為雲端相容的陣列結構
-            const normalizedHistory = historyContext.map(msg => ({
-                role: msg.role,
-                content: [
-                    { type: 'text', text: msg.content }
-                ]
-            }));
 
             let chatMessages = [];
 
             // 2. 根據是否包含圖片進行分流封裝
             if (targetImageBase64) {
-                // 移除最後一條剛轉換的純文字 user 訊息，改用內嵌圖片的標準多模態結構取代它
+                // 🎯 核心更動 2：只有「當前這一輪的最尖端 user 訊息」採用多模態 Content 陣列，歷史對話維持原樣
                 chatMessages = [
-                    ...normalizedHistory.slice(0, -1),
+                    ...historyContext.slice(0, -1), // 排除最後一條純文字 user 訊息
                     {
                         role: 'user',
                         content: [
@@ -60,7 +54,7 @@ export class ChatController {
                         ]
                     }
                 ];
-                console.log(`[${timestamp}] [INFO] [Vision] 已成功構建格式完全對齊的雲端多模態歷史結構`);
+                console.log(`[${timestamp}] [INFO] [Vision] 成功建立多模態歷史混合結構 (僅當前 user 採用陣列)`);
             } else {
                 // 純文字對話 RAG 檢索邏輯
                 const queryEmbedRes = await fetch(process.env.OLLAMA_EMBED_URL, {
@@ -87,14 +81,12 @@ export class ChatController {
                     chatMessages = [
                         { 
                             role: 'system', 
-                            content: [
-                                { type: 'text', text: `你是一個專業且親切的對話助手。以下提供的【參考文獻】是使用者上傳的相關背景資料。請優先結合文獻內容進行回答。如果文獻完全無關，請直接運用通用常識回答。\n\n【參考文獻】:\n${referenceText}` }
-                            ]
+                            content: `你是一個專業且親切的對話助手。以下提供的【參考文獻】是使用者上傳的相關背景資料。請優先結合文獻內容進行回答。如果文獻完全無關，請直接運用通用常識回答。\n\n【參考文獻】:\n${referenceText}` 
                         },
-                        ...normalizedHistory
+                        ...historyContext
                     ];
                 } else {
-                    chatMessages = normalizedHistory;
+                    chatMessages = historyContext;
                 }
             }
 
@@ -110,7 +102,6 @@ export class ChatController {
             });
 
             if (!response.ok) {
-                // 特殊處理：如果是 400 錯誤，把傳出的 payload 印出來以便進一步除錯
                 if (response.status === 400) {
                     console.error(`[${timestamp}] [DEBUG] [400_PAYLOAD]:`, JSON.stringify(chatMessages, null, 2));
                 }
