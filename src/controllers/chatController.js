@@ -25,38 +25,30 @@ export class ChatController {
                 }
             }
 
-            // 關鍵防護防線：如果使用者完全沒打字
+            // 安全防線：如果使用者完全沒打字
             if (!userPrompt) {
                 userPrompt = targetImageBase64 ? '請幫我描述這張圖片的內容。' : '你好！請問有什麼我可以幫您的嗎？';
             }
 
-            // 安全將文字存入歷史資料庫 (維持純字串)
+            // 2. 儲存並取得歷史紀錄 (所有 content 100% 維持最健康的純字串)
             await MessageModel.saveMessage(sessionId, 'user', userPrompt);
-            
-            // 🎯 核心更動 1：從資料庫撈出來的歷史紀錄，完全保留為原本的純字串物件，不進行 map 陣列轉換
             const historyContext = await MessageModel.getRecentContext(sessionId, 6);
 
             let chatMessages = [];
 
-            // 2. 根據是否包含圖片進行分流封裝
+            // 3. 採用 Ollama 正常的「外掛式圖片」傳送方式
             if (targetImageBase64) {
-                // 🎯 核心更動 2：只有「當前這一輪的最尖端 user 訊息」採用多模態 Content 陣列，歷史對話維持原樣
                 chatMessages = [
-                    ...historyContext.slice(0, -1), // 排除最後一條純文字 user 訊息
+                    ...historyContext.slice(0, -1), // 拿取先前的純字串對話歷史
                     {
                         role: 'user',
-                        content: [
-                            { type: 'text', text: userPrompt },
-                            { 
-                                type: 'image_url', 
-                                image_url: { url: `data:image/jpeg;base64,${targetImageBase64}` } 
-                            }
-                        ]
+                        content: userPrompt, // 🎯 正常方式：維持純字串，不管雲端陣列
+                        images: [targetImageBase64] // 🎯 正常方式：直接外掛在最外層的 images 欄位
                     }
                 ];
-                console.log(`[${timestamp}] [INFO] [Vision] 成功建立多模態歷史混合結構 (僅當前 user 採用陣列)`);
+                console.log(`[${timestamp}] [INFO] [Vision] 已採用 Ollama 正常多模態格式封裝（外掛 images 陣列）`);
             } else {
-                // 純文字對話 RAG 檢索邏輯
+                // 純文字對話與 RAG 檢索邏輯
                 const queryEmbedRes = await fetch(process.env.OLLAMA_EMBED_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -90,7 +82,7 @@ export class ChatController {
                 }
             }
 
-            // 3. 提交至雲端推理節點
+            // 4. 發送至對接端點
             const response = await fetch(process.env.OLLAMA_API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -103,13 +95,15 @@ export class ChatController {
 
             if (!response.ok) {
                 if (response.status === 400) {
-                    console.error(`[${timestamp}] [DEBUG] [400_PAYLOAD]:`, JSON.stringify(chatMessages, null, 2));
+                    console.error(`[${timestamp}] [DEBUG] [400_正常格式_PAYLOAD]:`, JSON.stringify(chatMessages, null, 2));
                 }
                 throw new Error(`核心節點異常: ${response.status}`);
             }
             
             const data = await response.json();
-            const aiResponse = data.choices ? data.choices[0].message.content : data.message.content;
+            
+            // 同時兼顧雲端 choices 與 Ollama 原生 message 欄位解析
+            const aiResponse = data.choices ? data.choices[0].message.content : (data.message ? data.message.content : '');
 
             await MessageModel.saveMessage(sessionId, 'assistant', aiResponse);
             await DiscordView.renderReply(message, aiResponse);
