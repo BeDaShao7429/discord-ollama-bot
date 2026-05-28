@@ -1,6 +1,6 @@
 import { MessageModel } from '../models/messageModel.js';
 import { DocumentModel } from '../models/documentModel.js';
-import { ImageModel } from '../models/imageModel.js'; // 🎯 引入全新對齊解耦的圖檔模型
+import { ImageModel } from '../models/imageModel.js'; 
 import { DiscordView } from '../views/discordView.js';
 import mongoose from 'mongoose';
 
@@ -42,8 +42,7 @@ export class AdminController {
     }
 
     /**
-     * 🎯 修改點一：清空資料庫重置環境
-     * 呼叫三大解耦模型各自的標準 .clear() 方法，不再越權操作原生 db.collection
+     * 清空資料庫重置環境
      */
     static async clearDatabase(message) {
         await message.channel.sendTyping();
@@ -52,7 +51,6 @@ export class AdminController {
             const resImg = await ImageModel.clear();
             const resMsg = await MessageModel.clear();
 
-            // 統計總共釋放的實體主文件數量
             const totalDeleted = (resDoc.deletedCount || 0) + (resImg.deletedCount || 0) + (resMsg.deletedCount || 0);
 
             return await DiscordView.renderReply(message, `[訊息] 資料庫維護完成！三大對齊模型（Image, Document, Message）已完全洗淨重置（共釋放 ${totalDeleted} 筆主體紀錄）。`);
@@ -62,11 +60,69 @@ export class AdminController {
     }
 
     /**
-     * 🎯 修改點二：盤點知識庫文檔清單
-     * 配合解耦後的 documentSchema 結構（切片片段已掛在 document 實體下面）進行聚合盤點
+     * 盤點知識庫文檔清單
      */
     static async listDocuments(message) {
         await message.channel.sendTyping();
         try {
             const db = mongoose.connection.db;
-            const collection = db.collection('documents'); // 對齊 documents 資料表
+            const collection = db.collection('documents'); 
+            
+            const docsSummary = await collection.aggregate([
+                { $project: { fileName: 1, guildId: 1, chunkCount: { $size: "$chunks" } } }
+            ]).toArray();
+
+            if (docsSummary.length === 0) {
+                return await DiscordView.renderReply(message, '[訊息] 目前知識庫內沒有任何儲存的文檔資產。');
+            }
+
+            let replyText = `**【目前知識庫文檔資產清單】** (共 ${docsSummary.length} 份文檔)\n\`\`\``;
+            docsSummary.forEach((doc, i) => {
+                replyText += `${i + 1}. 檔案: ${doc.fileName} | 內部切片數: ${doc.chunkCount} | 伺服器: ${doc.guildId}\n`;
+            });
+            replyText += `\`\`\``;
+
+            return await DiscordView.renderReply(message, replyText);
+        } catch (error) {
+            return await DiscordView.renderError(message, `無法讀取文檔清單，原因: ${error.message}`);
+        }
+    }
+
+    /**
+     * 列出對話摘要與資產關聯審計
+     */
+    static async listMessages(message) {
+        const sessionId = message.channel.id;
+        await message.channel.sendTyping();
+        try {
+            const db = mongoose.connection.db;
+            const collection = db.collection('messages');
+
+            const history = await collection.find({ sessionId }).sort({ timestamp: -1 }).limit(10).toArray();
+
+            if (history.length === 0) {
+                return await DiscordView.renderReply(message, '[訊息] 當前頻道目前沒有任何歷史對話紀錄。');
+            }
+
+            const normalOrder = history.reverse();
+            let replyText = `**【頻道最近對話紀錄與資產強度審計】**\n`;
+            
+            normalOrder.forEach((msg, i) => {
+                const snippet = msg.content.replace(/\n/g, ' ').substring(0, 25);
+                const timeStr = new Date(msg.timestamp).toLocaleTimeString();
+                
+                replyText += `\`[${timeStr}] ${msg.role.toUpperCase()}\`: ${snippet}${msg.content.length > 25 ? '...' : ''}\n`;
+                
+                if (msg.references && msg.references.length > 0) {
+                    msg.references.forEach(ref => {
+                        replyText += ` └── 🔗 關聯 [${ref.assetType.toUpperCase()}] \`${ref.fileName}\` | 強度: ${ref.relationStrength.toFixed(2)}\n`;
+                    });
+                }
+            });
+
+            return await DiscordView.renderReply(message, replyText);
+        } catch (error) {
+            return await DiscordView.renderError(message, `無法讀取對話紀錄，原因: ${error.message}`);
+        }
+    }
+}
