@@ -11,13 +11,9 @@ export class DocumentController {
         try {
             const parsedResult = await DocumentParser.parse(attachment);
 			
-			// 🎯 優化後的防禦機制：如果讀不到文字，但檔案其實有體積，不要直接拋錯，嘗試轉換思維
-			const fullText = parsedResult.content;
 
-			if (!fullText || !fullText.trim()) {
-				// 💡 降級備援思維：通知用戶這份文件可能不是純文字
-				return await DiscordView.renderReply(message, `[提示] 檔案 \`${attachment.name}\` 內不包含可提取的純文字。如果這是掃描檔或富媒體文檔，建議您將關鍵頁面截圖，並以「圖片」形式發送給我，我將啟動視覺多模態為您進行片段解析與關聯掛載。`);
-			}
+
+
 			
             // 🎯 1. 處理圖檔上傳與其下轄描述片段掛載
             if (parsedResult.type === 'image_base64') {
@@ -53,7 +49,10 @@ export class DocumentController {
 
             // 🎯 2. 處理常規文檔上傳 (PDF/Docx) 與其下轄文字切片掛載
             const fullText = parsedResult.content;
-            if (!fullText || !fullText.trim()) throw new Error('無效的文檔內容');
+            if (!fullText || !fullText.trim()) {
+				// 💡 降級備援思維：通知用戶這份文件可能不是純文字
+				return await DiscordView.renderReply(message, `[提示] 檔案 \`${attachment.name}\` 內不包含可提取的純文字。如果這是掃描檔或富媒體文檔，建議您將關鍵頁面截圖，並以「圖片」形式發送給我，我將啟動視覺多模態為您進行片段解析與關聯掛載。`);
+			}
 
             const chunkSize = 500;
             let chunkTexts = [];
