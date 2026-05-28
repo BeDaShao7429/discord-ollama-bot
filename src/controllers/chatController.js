@@ -6,6 +6,7 @@ import { DiscordView } from '../views/discordView.js';
 export class ChatController {
     static async processGemmaChat(message, botMentionPrefix) {
         const userPrompt = message.content.replace(botMentionPrefix, '').trim();
+		if(!userPrompt) userPrompt = "";
         const sessionId = message.channel.id;
         await message.channel.sendTyping();
 
