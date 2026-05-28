@@ -1,115 +1,115 @@
 import { MessageModel } from '../models/messageModel.js';
 import { DocumentModel } from '../models/documentModel.js';
+import { ImageModel } from '../models/imageModel.js';
 import { DiscordView } from '../views/discordView.js';
-import { DocumentParser } from '../utils/documentParser.js';
 
 export class ChatController {
     static async processGemmaChat(message, botMentionPrefix) {
-        let userPrompt = message.content.replace(botMentionPrefix, '').trim();
+        const userPrompt = message.content.replace(botMentionPrefix, '').trim();
         const sessionId = message.channel.id;
-        const timestamp = new Date().toISOString();
-
         await message.channel.sendTyping();
 
         try {
-            let targetImageBase64 = null;
+            // 1. 計算當前收到訊息的向量
+            const queryEmbedRes = await fetch(process.env.OLLAMA_EMBED_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: process.env.EMBED_MODEL_NAME, prompt: userPrompt })
+            });
+            if (!queryEmbedRes.ok) throw new Error('Embedding 節點異常');
+            const { embedding } = await queryEmbedRes.json();
 
-            // 1. 視覺判定：檢查當前對話訊息是否有直接夾帶圖檔
-            const hasDirectImage = message.attachments && message.attachments.size > 0;
-            if (hasDirectImage) {
-                const attachment = message.attachments.first();
-                const parsed = await DocumentParser.parse(attachment);
-                if (parsed.type === 'image_base64') {
-                    targetImageBase64 = parsed.content;
-                    console.log(`[${timestamp}] [INFO] [Vision] 偵測到使用者在對話中直接夾帶圖片進行提問`);
+            // 🎯 2. 收到訊息後，分別從解耦後的兩大 Model 撈出名下的所有片段進行語意比對
+            const docChunks = await DocumentModel.getAllChunks(message.guildId);
+            const imgChunks = await ImageModel.getAllChunks(sessionId);
+            const allChunks = [...docChunks, ...imgChunks];
+            
+            const calculateSimilarity = (v1, v2) => {
+                const dotProduct = v1.reduce((sum, val, i) => sum + val * v2[i], 0);
+                const mag1 = Math.sqrt(v1.reduce((sum, val) => sum + val * val, 0));
+                const mag2 = Math.sqrt(v2.reduce((sum, val) => sum + val * val, 0));
+                return mag1 === 0 || mag2 === 0 ? 0 : dotProduct / (mag1 * mag2);
+            };
+
+            // 篩選出相似度大於 0.45 的 Top-4 最相關片段
+            const matchedResults = allChunks
+                .map(c => ({ ...c, similarity: calculateSimilarity(embedding, c.embedding) }))
+                .filter(c => c.similarity > 0.45)
+                .sort((a, b) => b.similarity - a.similarity)
+                .slice(0, 4);
+
+            // 🎯 3. 建構當前 Message 的 References 關係結構，精確記錄訊息跟誰有關、強度是多少
+            let references = [];
+            let referenceTexts = [];
+            let imageVotes = new Map();
+
+            matchedResults.forEach(res => {
+                references.push({
+                    assetType: res.type,
+                    assetId: res.assetId,
+                    fileName: res.fileName,
+                    associatedChunk: res.content,
+                    relationStrength: res.similarity // 記錄量化後的引用強度
+                });
+
+                referenceTexts.push(`[關聯資產: ${res.fileName}] ${res.content}`);
+                
+                if (res.type === 'image') {
+                    const currentWeight = imageVotes.get(res.assetId) || 0;
+                    imageVotes.set(res.assetId, currentWeight + res.similarity);
                 }
-            }
+            });
 
-            // 安全防線：如果使用者完全沒打字
-            if (!userPrompt) {
-                userPrompt = targetImageBase64 ? '請幫我描述這張圖片的內容。' : '你好！請問有什麼我可以幫您的嗎？';
-            }
-
-            // 2. 儲存並取得歷史紀錄 (所有 content 100% 維持最健康的純字串)
-            await MessageModel.saveMessage(sessionId, 'user', userPrompt);
+            // 🎯 4. 儲存 Message 實體（正式將訊息與資產的關係與強度寫入資料庫）
+            await MessageModel.save(sessionId, 'user', userPrompt, references);
             const historyContext = await MessageModel.getRecentContext(sessionId, 6);
 
-            let chatMessages = [];
+            // 🎯 5. 依據訊息與圖檔的關係強度，判定是否需要定點召回（Recall）圖檔實體
+            let targetImageBase64 = null;
+            let promptExtension = '';
 
-            // 3. 採用 Ollama 正常的「外掛式圖片」傳送方式
-            if (targetImageBase64) {
-                chatMessages = [
-                    ...historyContext.slice(0, -1), // 拿取先前的純字串對話歷史
-                    {
-                        role: 'user',
-                        content: userPrompt, // 🎯 正常方式：維持純字串，不管雲端陣列
-                        images: [targetImageBase64] // 🎯 正常方式：直接外掛在最外層的 images 欄位
+            if (imageVotes.size > 0) {
+                const [bestImageId, strength] = [...imageVotes.entries()].sort((a, b) => b[1] - a[1])[0];
+                if (strength > 0.5) { // 引用強度閾值
+                    // 🎯 從對齊優化後的 ImageModel 獲取高質量實體
+                    const imgEntity = await ImageModel.getById(bestImageId);
+                    if (imgEntity) {
+                        targetImageBase64 = imgEntity.base64Data;
+                        promptExtension = `\n(系統檢測到此訊息與歷史圖檔 [${imgEntity.originalName}] 具備強關聯，已自動召回影像實體輔助推理。)`;
                     }
-                ];
-                console.log(`[${timestamp}] [INFO] [Vision] 已採用 Ollama 正常多模態格式封裝（外掛 images 陣列）`);
-            } else {
-                // 純文字對話與 RAG 檢索邏輯
-                const queryEmbedRes = await fetch(process.env.OLLAMA_EMBED_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ model: process.env.EMBED_MODEL_NAME, prompt: userPrompt })
-                });
-                
-                if (!queryEmbedRes.ok) throw new Error(`Embedding 服務響應異常: ${queryEmbedRes.statusText}`);
-                const { embedding } = await queryEmbedRes.json();
-                
-                const matchedChunks = await DocumentModel.findSimilarChunks(message.guildId, embedding, 3);
-                let isRAGActivated = false;
-                
-                if (matchedChunks.length > 0) {
-                    const highestScore = matchedChunks[0].similarity;
-                    if (!isNaN(highestScore) && highestScore > 0.5 && highestScore <= 1.0) {
-                        isRAGActivated = true;
-                    }
-                }
-
-                if (isRAGActivated) {
-                    const referenceText = matchedChunks.map(c => `[文件: ${c.fileName}] ${c.content}`).join('\n');
-                    chatMessages = [
-                        { 
-                            role: 'system', 
-                            content: `你是一個專業且親切的對話助手。以下提供的【參考文獻】是使用者上傳的相關背景資料。請優先結合文獻內容進行回答。如果文獻完全無關，請直接運用通用常識回答。\n\n【參考文獻】:\n${referenceText}` 
-                        },
-                        ...historyContext
-                    ];
-                } else {
-                    chatMessages = historyContext;
                 }
             }
 
-            // 4. 發送至對接端點
+            // 6. 封裝發送 Payload 提交推理
+            let chatMessages = [];
+            const finalPrompt = userPrompt + promptExtension;
+
+            if (referenceTexts.length > 0) {
+                const systemPrompt = `你是一個專業助理。以下是與使用者當前訊息具備高強度關聯的文檔與圖檔描述片段，請優先結合這些背景知識與影像實體進行回答。\n\n【關聯資產文獻】:\n${referenceTexts.join('\n')}`;
+                chatMessages = [
+                    { role: 'system', content: systemPrompt },
+                    ...historyContext.slice(0, -1),
+                    { role: 'user', content: finalPrompt, ...(targetImageBase64 && { images: [targetImageBase64] }) }
+                ];
+            } else {
+                chatMessages = historyContext;
+            }
+
             const response = await fetch(process.env.OLLAMA_API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    model: process.env.MODEL_NAME, 
-                    messages: chatMessages, 
-                    stream: false 
-                })
+                body: JSON.stringify({ model: process.env.MODEL_NAME, messages: chatMessages, stream: false })
             });
 
-            if (!response.ok) {
-                if (response.status === 400) {
-                    console.error(`[${timestamp}] [DEBUG] [400_正常格式_PAYLOAD]:`, JSON.stringify(chatMessages, null, 2));
-                }
-                throw new Error(`核心節點異常: ${response.status}`);
-            }
-            
+            if (!response.ok) throw new Error(`核心節點異常: ${response.status}`);
             const data = await response.json();
-            
-            // 同時兼顧雲端 choices 與 Ollama 原生 message 欄位解析
-            const aiResponse = data.choices ? data.choices[0].message.content : (data.message ? data.message.content : '');
+            const aiResponse = data.choices ? data.choices[0].message.content : data.message.content;
 
-            await MessageModel.saveMessage(sessionId, 'assistant', aiResponse);
+            await MessageModel.save(sessionId, 'assistant', aiResponse);
             await DiscordView.renderReply(message, aiResponse);
 
         } catch (error) {
-            console.error(`[${timestamp}] [ERROR] [ChatController] 流程中斷:`, error.stack);
+            console.error(`[ERROR] [ChatController] 流程中斷:`, error.stack);
             await DiscordView.renderError(message, '核心運算節點阻斷，請稍後再試。');
         }
     }

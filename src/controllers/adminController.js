@@ -1,5 +1,8 @@
-import mongoose from 'mongoose';
+import { MessageModel } from '../models/messageModel.js';
+import { DocumentModel } from '../models/documentModel.js';
+import { ImageModel } from '../models/imageModel.js'; // 🎯 引入全新對齊解耦的圖檔模型
 import { DiscordView } from '../views/discordView.js';
+import mongoose from 'mongoose';
 
 export class AdminController {
     /**
@@ -7,7 +10,7 @@ export class AdminController {
      */
     static async handleCommand(message, commandStr) {
         const timestamp = new Date().toISOString();
-        console.log(`[${timestamp}] [ADMIN] 接收到系統指令: "${commandStr}"，由用戶: ${message.author.tag} 觸發`);
+        console.log(`[${timestamp}] [ADMIN] 接收到系統維護指令: "${commandStr}"`);
 
         switch (commandStr) {
             case '$help':
@@ -19,7 +22,7 @@ export class AdminController {
             case '$listmsg':
                 return await this.listMessages(message);
             default:
-                return await DiscordView.renderError(message, `未知指令: \`${commandStr}\`。請輸入 \`$help\` 查看可用指令清單。`);
+                return await DiscordView.renderError(message, `未知指令: \`${commandStr}\`。請輸入 \`$help\` 查看可用指令。`);
         }
     }
 
@@ -30,93 +33,40 @@ export class AdminController {
         let helpText = `**【🤖 Discord Ollama Bot 系統管理指令清單】**\n`;
         helpText += `所有維護指令皆以 \`$\` 開頭，不需標記（@）機器人：\n\n`;
         helpText += `> \`$help\` : 顯示此系統管理指令清單與維護說明。\n`;
-        helpText += `> \`$listdoc\` : 盤點資料庫中目前已收錄的知識庫文件與切片數量。\n`;
-        helpText += `> \`$listmsg\` : 查看當前頻道最近 10 條在資料庫中的對話紀錄摘要。\n`;
-        helpText += `> \`$clear\` : ⚠️ **重置測試環境**。強制清空 \`docchunks\` 與 \`messages\` 資料表。\n\n`;
+        helpText += `> \`$listdoc\` : 盤點資料庫中目前已收錄的知識庫文件與其切片總數。\n`;
+        helpText += `> \`$listmsg\` : 查看當前頻道最近 10 條在資料庫中的對話紀錄與資產關聯摘要。\n`;
+        helpText += `> \`$clear\` : ⚠️ **重置測試環境**。強制清空 \`images\`、\`documents\` 與 \`messages\` 三大資料表。\n\n`;
         helpText += `*提示：進行全新功能測試前，建議執行 \`$clear\` 以避免舊資料與上下文污染。*`;
 
         return await DiscordView.renderReply(message, helpText);
     }
 
     /**
-     * 清空資料表
+     * 🎯 修改點一：清空資料庫重置環境
+     * 呼叫三大解耦模型各自的標準 .clear() 方法，不再越權操作原生 db.collection
      */
     static async clearDatabase(message) {
         await message.channel.sendTyping();
         try {
-            const db = mongoose.connection.db;
-            const targetCollections = ['docchunks', 'messages'];
-            let totalDeleted = 0;
+            const resDoc = await DocumentModel.clear();
+            const resImg = await ImageModel.clear();
+            const resMsg = await MessageModel.clear();
 
-            for (const colName of targetCollections) {
-                const collection = db.collection(colName);
-                const result = await collection.deleteMany({});
-                totalDeleted += result.deletedCount;
-            }
+            // 統計總共釋放的實體主文件數量
+            const totalDeleted = (resDoc.deletedCount || 0) + (resImg.deletedCount || 0) + (resMsg.deletedCount || 0);
 
-            return await DiscordView.renderReply(message, `[訊息] 資料庫維護完成！已成功清空 \`docchunks\` 與 \`messages\` 資料表（共釋放 ${totalDeleted} 筆紀錄）。`);
+            return await DiscordView.renderReply(message, `[訊息] 資料庫維護完成！三大對齊模型（Image, Document, Message）已完全洗淨重置（共釋放 ${totalDeleted} 筆主體紀錄）。`);
         } catch (error) {
-            return await DiscordView.renderError(message, `資料庫清空失敗，原因: ${error.message}`);
+            return await DiscordView.renderError(message, `環境重置失敗，原因: ${error.message}`);
         }
     }
 
     /**
-     * 盤點並列出目前儲存的文件資訊
+     * 🎯 修改點二：盤點知識庫文檔清單
+     * 配合解耦後的 documentSchema 結構（切片片段已掛在 document 實體下面）進行聚合盤點
      */
     static async listDocuments(message) {
         await message.channel.sendTyping();
         try {
             const db = mongoose.connection.db;
-            const collection = db.collection('docchunks');
-            
-            const docsSummary = await collection.aggregate([
-                { $group: { _id: "$fileName", chunkCount: { $sum: 1 }, guildId: { $first: "$guildId" } } }
-            ]).toArray();
-
-            if (docsSummary.length === 0) {
-                return await DiscordView.renderReply(message, '[訊息] 目前知識庫內沒有任何儲存的文件。');
-            }
-
-            let replyText = `**【目前知識庫文件清單】** (共 ${docsSummary.length} 份文件)\n\`\`\``;
-            docsSummary.forEach((doc, i) => {
-                replyText += `${i + 1}. 檔案: ${doc._id} | 切片數: ${doc.chunkCount} | 伺服器: ${doc.guildId}\n`;
-            });
-            replyText += `\`\`\``;
-
-            return await DiscordView.renderReply(message, replyText);
-        } catch (error) {
-            return await DiscordView.renderError(message, `無法讀取文件清單，原因: ${error.message}`);
-        }
-    }
-
-    /**
-     * 列出當前頻道的最近對話資料摘要
-     */
-    static async listMessages(message) {
-        const sessionId = message.channel.id;
-        await message.channel.sendTyping();
-        try {
-            const db = mongoose.connection.db;
-            const collection = db.collection('messages');
-
-            const history = await collection.find({ sessionId }).sort({ timestamp: -1 }).limit(10).toArray();
-
-            if (history.length === 0) {
-                return await DiscordView.renderReply(message, '[訊息] 當前頻道目前沒有任何歷史對話紀錄。');
-            }
-
-            const normalOrder = history.reverse();
-            let replyText = `**【當前頻道最近 10 條對話紀錄摘要】**\n\`\`\``;
-            normalOrder.forEach((msg, i) => {
-                const snippet = msg.content.replace(/\n/g, ' ').substring(0, 30);
-                const timeStr = new Date(msg.timestamp).toLocaleTimeString();
-                replyText += `[${timeStr}] ${msg.role.toUpperCase()}: ${snippet}${msg.content.length > 30 ? '...' : ''}\n`;
-            });
-            replyText += `\`\`\``;
-
-            return await DiscordView.renderReply(message, replyText);
-        } catch (error) {
-            return await DiscordView.renderError(message, `無法讀取對話紀錄，原因: ${error.message}`);
-        }
-    }
-}
+            const collection = db.collection('documents'); // 對齊 documents 資料表
