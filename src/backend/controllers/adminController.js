@@ -1,7 +1,7 @@
 import { MessageModel } from '../models/messageModel.js';
 import { DocumentModel } from '../models/documentModel.js';
 import { ImageModel } from '../models/imageModel.js'; 
-import { ConfigManager } from '../../utils/configManager.js';
+import { ConfigManager } from '/../utils/configManager.js';
 import mongoose from 'mongoose';
 
 export class AdminController {
