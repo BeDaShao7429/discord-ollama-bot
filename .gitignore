@@ -2,7 +2,7 @@
 .env
 *.bak*
 *.temp*
-*ssh_key*
+*ssh*
 # 忽略本地套件庫（不需追蹤，在別台機器只需 npm install）
 node_modules
 
