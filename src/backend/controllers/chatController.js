@@ -1,7 +1,8 @@
 import { MessageModel } from '../models/messageModel.js';
 import { DocumentModel } from '../models/documentModel.js';
 import { ImageModel } from '../models/imageModel.js';
-import { ConfigManager } from '../../utils/configManager.js';
+// 在 src/backend/controllers/chatController.js 頂端：
+import { ConfigManager } from '../utils/configManager.js'; // 只需要一個 ../ 即可精確對齊
 
 export class ChatController {
     /**
